@@ -34,6 +34,10 @@ print("Imputed Matrix:\n", final_result)
 
 MIT License
 
-### Author
+### Contact
 
 Hanqing Wu
+
+Lund University
+
+Email: hanqing.wu@stat.lu.se
