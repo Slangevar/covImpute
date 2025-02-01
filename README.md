@@ -1,7 +1,7 @@
 # covImpute
 ### Matrix Imputation Using External Covariance Structure
 
-`covImpute` is a matrix imputation method that incorporates an external covariance structure to improve completion accuracy. It employs a **Fast Gradient Method (FGM)** with a covariance-regularized objective function, **biasing the imputed values towards the given covariance structure**.
+`covImpute` is a matrix imputation method that incorporates an external covariance structure to improve completion accuracy. It employs a Fast Gradient Method with a covariance-regularized objective function, biasing the imputed values towards the given covariance structure.
 
 ### Dependencies
 
