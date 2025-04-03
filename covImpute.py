@@ -3,7 +3,7 @@ import numpy as np
 from typing import Optional, Callable
 from scipy.stats import norm
 from sklearn.model_selection import KFold
-from sklearn.metrics import f1_score
+from sklearn.metrics import f1_score, roc_auc_score
 
 
 def f1(
@@ -332,19 +332,26 @@ def cv_mu(
     # Initialize objective sums
     sum_loss = {mu: 0 for mu in mu_values}
 
-    # Determine observed entries
+    # Determine observed entries and restrict to columns with missingness
     if U is not None and V is not None:
-        obs_mask = ~np.isnan(np.hstack((U, V)))
+        X_concat = np.hstack((U, V))
+        obs_mask = ~np.isnan(X_concat)
+        col_has_missing = np.isnan(X_concat).any(axis=0)
         U = np.nan_to_num(U)
-        V = np.nan_to_num(V)
-    elif U is not None:
-        obs_mask = ~np.isnan(U)
-        U = np.nan_to_num(U)
-    else:
-        obs_mask = ~np.isnan(V)
         V = np.nan_to_num(V)
 
-    obs_indices = np.argwhere(obs_mask)
+    elif U is not None:
+        obs_mask = ~np.isnan(U)
+        col_has_missing = np.isnan(U).any(axis=0)
+        U = np.nan_to_num(U)
+
+    else:
+        obs_mask = ~np.isnan(V)
+        col_has_missing = np.isnan(V).any(axis=0)
+        V = np.nan_to_num(V)
+
+    all_obs_indices = np.argwhere(obs_mask)
+    obs_indices = all_obs_indices[col_has_missing[all_obs_indices[:, 1]]]
 
     # Cross-validation loop
     for fold_idx, (_, test_idx) in enumerate(kf.split(obs_indices)):
@@ -403,14 +410,16 @@ def cv_mu(
             if loss_fn is not None:
                 if U is not None and V is not None:
                     X_true = np.hstack((U, V))
+                    mask = np.zeros_like(X_true, dtype=bool)
+                    mask[test_mask[:, 0], test_mask[:, 1]] = True
                 elif U is not None:
                     X_true = U
-                    test_mask = U_test_mask
+                    mask = U_test_mask
                 else:
                     X_true = V
-                    test_mask = V_test_mask
+                    mask = V_test_mask
 
-                fold_loss = loss_fn(X_true, X_hat, test_mask)
+                fold_loss = loss_fn(X_true, X_hat, mask)
 
             else:
                 # Default to f1, f2, or f1+f2 depending on which blocks are present
@@ -450,3 +459,18 @@ def neg_f1_score(X_true, X_hat, test_mask):
     X_hat_unobserved = X_hat[test_mask].flatten()
 
     return -1 * f1_score(X_true_unobserved, X_hat_unobserved)
+
+
+def neg_roc_auc(X_true, X_hat, test_mask):
+    """
+    Calculate the negative AUC-ROC score between the true and predicted values.
+
+    X_true: True values (ground truth)
+    X_hat: Predicted values
+    test_mask: Mask indicating which values are involved in the test.
+    """
+
+    X_true_unobserved = X_true[test_mask].flatten()
+    X_hat_unobserved = X_hat[test_mask].flatten()
+
+    return -1 * roc_auc_score(X_true_unobserved, X_hat_unobserved)

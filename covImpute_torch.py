@@ -5,7 +5,7 @@ from torch import Tensor
 from typing import Optional, Union, Callable
 from torch.special import log_ndtr  # For numerically stable log(Phi(x))
 from sklearn.model_selection import KFold
-from sklearn.metrics import f1_score
+from sklearn.metrics import f1_score, roc_auc_score
 
 STANDARD_NORMAL = torch.distributions.Normal(0.0, 1.0)
 
@@ -286,16 +286,21 @@ def cv_mu_torch(
     if U is not None and V is not None:
         m1 = U.shape[1]
         obs_mask = torch.cat([~torch.isnan(U), ~torch.isnan(V)], dim=1)
+        col_has_missing = torch.cat([torch.isnan(U), torch.isnan(V)], dim=1).any(dim=0)
         U = torch.nan_to_num(U)
         V = torch.nan_to_num(V)
     elif U is not None:
         obs_mask = ~torch.isnan(U)
+        col_has_missing = torch.isnan(U).any(dim=0)
         U = torch.nan_to_num(U)
     else:
         obs_mask = ~torch.isnan(V)
+        col_has_missing = torch.isnan(V).any(dim=0)
         V = torch.nan_to_num(V)
 
-    obs_indices = obs_mask.nonzero(as_tuple=False).cpu().numpy()
+    all_obs_indices = obs_mask.nonzero(as_tuple=False).cpu().numpy()
+    obs_indices = all_obs_indices[col_has_missing[all_obs_indices[:, 1]].cpu().numpy()]
+
     kf = KFold(n_splits=nfolds, shuffle=True, random_state=seed)
     sum_loss = {mu: 0.0 for mu in mu_values}
 
@@ -364,6 +369,8 @@ def cv_mu_torch(
                         X_true = V
                         mask = V_test_mask
 
+                    fold_loss = loss_fn(X_true, X_hat, mask)
+
                 except Exception:
                     # Fall back to NumPy-based loss_fn
                     if U is not None and V is not None:
@@ -379,7 +386,7 @@ def cv_mu_torch(
 
                     X_hat = X_hat.cpu().numpy()
 
-                fold_loss = loss_fn(X_true, X_hat, mask)
+                    fold_loss = loss_fn(X_true, X_hat, mask)
 
             else:
                 if U is not None and V is not None:
@@ -423,3 +430,18 @@ def neg_f1_score(X_true, X_hat, test_mask):
     X_hat_unobserved = X_hat[test_mask].flatten()
 
     return -1 * f1_score(X_true_unobserved, X_hat_unobserved)
+
+
+def neg_roc_auc(X_true, X_hat, test_mask):
+    """
+    Calculate the negative AUC-ROC score between the true and predicted values.
+
+    X_true: True values (ground truth)
+    X_hat: Predicted values
+    test_mask: Mask indicating which values are involved in the test.
+    """
+
+    X_true_unobserved = X_true[test_mask].flatten()
+    X_hat_unobserved = X_hat[test_mask].flatten()
+
+    return -1 * roc_auc_score(X_true_unobserved, X_hat_unobserved)
