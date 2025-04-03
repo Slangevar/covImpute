@@ -1,48 +1,118 @@
+import warnings
 import numpy as np
+from typing import Optional
+from scipy.stats import norm
+
+# from scipy.special import log_ndtr
 from sklearn.model_selection import KFold
 
 
-def obj_fun(Y, X_hat, mask):
-    return 0.5 * np.sum(((Y - X_hat)[~mask]) ** 2)
+def f1(
+    U: np.ndarray,
+    M1: np.ndarray,
+    W: np.ndarray,
+    Q: np.ndarray,
+    weighted: bool = False,
+) -> float:
+    """
+    Compute the cross-entropy loss for U and W
+
+    U: the binary matrix of shape n x m_1
+    M1: the mask matrix of shape n x m_1. M_{ij} = 1 if U_{ij} is observed, 0 otherwise.
+    Phi: the matrix of shape n x m_1. Phi_{ij} = \Phi(W_{ij} - Q_{ij})
+    weight: if True, the loss is weighted by the probability of observing certain values of U_{ij}.
+
+    Return: the cross-entropy loss
+    """
+    log_Phi = norm.logcdf(W - Q)
+    log_one_minus_Phi = norm.logcdf(-W + Q)
+
+    if weighted:
+        P = norm.cdf(Q)
+        return -np.sum(M1 * (U * P * log_Phi + (1 - U) * (1 - P) * log_one_minus_Phi))
+    return -np.sum(M1 * (U * log_Phi + (1 - U) * log_one_minus_Phi))
+
+
+def f2(V: np.ndarray, M2: np.ndarray, Y: np.ndarray):
+    """
+    Compute the squared error loss for V and Y, or equivalently,
+    the square Frobenius norm of the difference.
+
+    V: the continuous matrix of shape n x m_2
+    M2: the mask matrix of shape n x m_2. M_{ij} = 1 if V_{ij} is observed, 0 otherwise.
+    Y: the imputed matrix of shape n x m_2
+
+    Return: the squared error loss
+    """
+
+    return 0.5 * np.sum((M2 * (V - Y)) ** 2)
+
+
+def f3(Z: np.ndarray, E_inv_sqrt: np.ndarray, mu: float) -> float:
+    """
+    Compute the covariance regularization term
+
+    Z: the imputed matrix of shape n x m (m = m_1 + m_2)
+    E_inv_sqrt: the inverse of the squared root of the covariance matrix E of shape m x m
+    mu: the regularization parameter
+
+    Return: the covariance regularization term
+    """
+    return 0.5 * mu * np.linalg.norm(Z @ E_inv_sqrt, "fro") ** 2
+
+
+def df1(
+    U: np.ndarray,
+    M1: np.ndarray,
+    W: np.ndarray,
+    Q: np.ndarray,
+    weighted: bool = False,
+) -> np.ndarray:
+    """
+    Compute the gradient of f1 with respect to W. Using exponential of the log value to avoid numerical underflow.
+
+    U: the binary matrix of shape n x m_1
+    M1: the mask matrix of shape n x m_1. M_{ij} = 1 if U_{ij} is observed, 0 otherwise.
+    W: the matrix of shape n x m_1
+    Q: the matrix of shape n x m_1
+    weighted: if True, the gradient is weighted by the probability of observing certain values of U_{ij}.
+
+    Return: the gradient of f1 with respect to W
+    """
+    log_dPhi = norm.logpdf(W - Q)
+    log_Phi = norm.logcdf(W - Q)
+    log_one_minus_Phi = norm.logcdf(-W + Q)
+
+    first_term = np.exp(log_dPhi - log_Phi)
+    second_term = np.exp(log_dPhi - log_one_minus_Phi)
+
+    if weighted:
+        P = norm.cdf(Q)
+        return -M1 * (U * P * first_term - (1 - U) * (1 - P) * second_term)
+
+    return -M1 * (U * first_term - (1 - U) * second_term)
 
 
 def covImpute(
-    X: np.ndarray,
+    V: np.ndarray,
     E: np.ndarray,
     mu: float,
+    *,
+    U: Optional[np.ndarray] = None,
+    Q: Optional[np.ndarray] = None,
     maxit: int = 1000,
     tol: float = 1e-3,
     patience: int = 3,
     verbose: bool = False,
+    weighted: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Perform matrix imputation using a fast gradient method with covariance regularization.
-
-    Parameters:
-    X (np.ndarray): Input data matrix with missing values (NaNs).
-    E (np.ndarray): Covariance matrix.
-    mu (float): Regularization parameter.
-    maxit (int, optional): Maximum number of iterations. Default is 1000.
-    tol (float, optional): Tolerance for convergence. Default is 1e-3.
-    patience (int, optional): Number of iterations to wait for significant improvement before stopping. Default is 3.
-    verbose (bool, optional): If True, print progress messages. Default is False.
-
-    Returns:
-    tuple[np.ndarray, np.ndarray]: Imputed matrix and matrix with observed entries restored.
+    TODO: Complete the docstring
     """
-
-    # Create mask for missing entries
-    mask = np.isnan(X)
-
-    # Initialize variables
-    Y = np.nan_to_num(X)  # Replace NaNs with 0
-    X_hat = Y.copy()
-
     # Compute eigen decomposition of E
     eigvals, eigvecs = np.linalg.eigh(E)  # Use eigh for symmetric matrices
     gamma_min, gamma_max = np.min(eigvals), np.max(eigvals)
 
-    # Precompute constants
     eta = mu / gamma_max
     L = 1 + mu / gamma_min
     step_size = 1 / L
@@ -56,121 +126,93 @@ def covImpute(
 
     # Convergence monitoring
     patience_counter = 0
-    old_obj = np.inf
+    obj_old = np.inf
 
-    # Iterative optimization
-    for it in range(1, maxit + 1):
-        X_hat_old = X_hat.copy()
-
-        # Gradient step
-        X_hat = Y.copy()
-        X_hat[~mask] += step_size * (X[~mask] - Y[~mask])
-        X_hat -= step_size * mu * (Y @ E_inv)
-
-        # Momentum update
-        Y = X_hat + beta * (X_hat - X_hat_old)
-
-        # Compute objective function
-        imputation_error = obj_fun(X, X_hat, mask)
-        regularization = 0.5 * mu * np.linalg.norm(X_hat @ E_inv_sqrt, "fro") ** 2
-        objective = imputation_error + regularization
-
-        # Check for convergence
-        change_in_obj = np.abs(old_obj - objective)
-        if change_in_obj < tol:
-            patience_counter += 1
-        else:
-            patience_counter = 0
-        old_obj = objective
-
-        # Verbose output
+    if U is None:
         if verbose:
-            print(
-                f"Iter: {it}, Objective: {objective:.4e}, Change: {change_in_obj:.4e}"
+            warnings.warn("There is no binary part. Only continuous part is provided.")
+        M = 1 - np.isnan(V)
+        V = np.nan_to_num(V)  # Replace NaNs with 0
+        Z = V.copy()
+        tilde_Z = Z.copy()
+        for it in range(1, maxit + 1):
+            Z_old = Z.copy()
+
+            Z = tilde_Z - step_size * (-M * (V - tilde_Z) + mu * (tilde_Z @ E_inv))
+
+            obj = f2(V, M, Z) + f3(Z, E_inv_sqrt, mu)
+            change_in_obj = np.abs(obj_old - obj)
+
+            if verbose:
+                print(f"Iter: {it}, Objective: {obj:.4e}, Change: {change_in_obj:.4e}")
+
+            if change_in_obj < tol:
+                patience_counter += 1
+
+            if patience_counter >= patience:
+                if verbose:
+                    print(f"Converged after {it} iterations.")
+                return V + (1 - M) * Z  # This is the final imputed matrix X_hat
+            else:
+                # Update tilde Z (tilde W, tilde Y)
+                tilde_Z = Z + beta * (Z - Z_old)
+                obj_old = obj
+
+        return V + (1 - M) * Z
+
+    else:
+        if Q is None:
+            raise ValueError("When U is not None, Q must be provided.")
+        M1 = 1 - np.isnan(U)
+        M2 = 1 - np.isnan(V)
+        U = np.nan_to_num(U)  # Replace NaNs with 0
+        V = np.nan_to_num(V)
+        X = np.hstack((U, V))
+        M = np.hstack((M1, M2))
+
+        Z = np.hstack((M1 * Q, V))
+        tilde_Z = Z.copy()
+
+        # Iterative optimization
+        for it in range(1, maxit + 1):
+            W = tilde_Z[:, : U.shape[1]]
+            Y = tilde_Z[:, U.shape[1] :]
+
+            # Using stabilized version of the gradient
+            grad_W = df1(U, M1, W, Q, weighted)
+            grad_V = -M2 * (V - Y)
+
+            grad_obj = np.hstack((grad_W, grad_V))
+            grad_penalty = mu * tilde_Z @ E_inv
+
+            Z_old = Z.copy()
+            Z = tilde_Z - step_size * (grad_obj + grad_penalty)
+
+            # Compute objective function
+            obj = (
+                f1(U, M1, Z[:, : U.shape[1]], Q, weighted)
+                + f2(V, M2, Z[:, U.shape[1] :])
+                + f3(Z, E_inv_sqrt, mu)
             )
 
-        if patience_counter >= patience:
+            change_in_obj = np.abs(obj_old - obj)
+
             if verbose:
-                print(f"Converged after {it} iterations.")
-            break
-    else:
-        if verbose:
-            print(f"Did not converge after {maxit} iterations.")
+                print(f"Iter: {it}, Objective: {obj:.4e}, Change: {change_in_obj:.4e}")
 
-    # Restore observed entries
-    final_result = X_hat.copy()
-    final_result[~mask] = X[~mask]
+            # Check for convergence
+            if change_in_obj < tol:
+                patience_counter += 1
 
-    return X_hat, final_result
+            if patience_counter >= patience:
+                if verbose:
+                    print(f"Converged after {it} iterations.")
+                return M * X + (1 - M) * np.hstack(
+                    (W > Q, Y)
+                )  # This is the final imputed matrix X_hat
+            else:
+                # Update tilde Z (tilde W, tilde Y)
+                tilde_Z = Z + beta * (Z - Z_old)
+                obj_old = obj
 
-
-def cv_mu(
-    X: np.ndarray,
-    E: np.ndarray,
-    mu_values: list,
-    nfolds: int = 5,
-    maxit: int = 1000,
-    tol: float = 1e-3,
-    patience: int = 3,
-    seed: int = 9727,
-    verbose: bool = False,
-):
-    """
-    Perform cross-validation to find the best choice of mu for covImpute.
-
-    Parameters:
-    X (np.ndarray): Input data matrix with missing values (NaNs).
-    E (np.ndarray): Covariance matrix.
-    mu_values (list): List of regularization parameters to evaluate.
-    nfolds (int, optional): Number of folds for cross-validation. Default is 5.
-    maxit (int, optional): Maximum number of iterations. Default is 1000.
-    tol (float, optional): Tolerance for convergence. Default is 1e-3.
-    patience (int, optional): Number of iterations to wait for significant improvement before stopping. Default is 3.
-    seed (int, optional): Random seed for reproducibility. Default is 9727.
-    verbose (bool, optional): If True, print progress messages. Default is False.
-
-    Returns:
-    tuple[float, dict]: Best mu value and dictionary of sum of objective values for each mu.
-    """
-
-    # Get observed (non-NaN) indices
-    obs_indices = np.array(list(zip(*np.where(~np.isnan(X)))))
-
-    # Initialize KFold cross-validator
-    kf = KFold(n_splits=nfolds, shuffle=True, random_state=seed)
-
-    # Initialize objective sums
-    sum_obj = {mu: 0 for mu in mu_values}
-
-    # Cross-validation loop
-    for fold_idx, (_, test_idx) in enumerate(kf.split(obs_indices)):
-        if verbose:
-            print(f"Processing Fold {fold_idx + 1}/{nfolds}")
-
-        # Create a copy of X for training
-        X_train = X.copy()
-
-        # Mask the test set
-        test_indices = obs_indices[test_idx]
-        test_mask = np.ones_like(X, dtype=bool)
-        test_mask[test_indices[:, 0], test_indices[:, 1]] = False
-
-        # Assign NaN to test set in X_train
-        X_train[test_indices[:, 0], test_indices[:, 1]] = np.nan
-
-        # Evaluate each mu
-        for mu in mu_values:
-            if verbose:
-                print(f"Evaluating mu = {mu}")
-
-            # Perform imputation (assumes covImpute is defined elsewhere)
-            _, X_hat = covImpute(X_train, E, mu, maxit, tol, patience)
-
-            # Compute objective function for this fold and mu
-            obj = obj_fun(X, X_hat, test_mask)
-            sum_obj[mu] += obj
-
-    # Find the best mu (minimizing objective)
-    best_mu = min(sum_obj, key=sum_obj.get)
-
-    return best_mu, sum_obj
+        return M * X + (1 - M) * np.hstack((W > Q, Y))
