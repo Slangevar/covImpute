@@ -5,7 +5,6 @@ from torch import Tensor
 from typing import Optional, Union, Callable
 from torch.special import log_ndtr  # For numerically stable log(Phi(x))
 from sklearn.model_selection import KFold
-from sklearn.metrics import f1_score, roc_auc_score
 
 STANDARD_NORMAL = torch.distributions.Normal(0.0, 1.0)
 
@@ -83,7 +82,7 @@ def covImpute_torch(
     verbose: bool = False,
     weighted: bool = False,
     device: Optional[str] = None,
-) -> tuple[Tensor, Tensor]:
+) -> tuple[Tensor, Tensor, Tensor]:
     """
     Covariance-regularized imputation with optional binary part.
     Accepts NumPy arrays or PyTorch tensors.
@@ -148,7 +147,7 @@ def covImpute_torch(
 
         X_hat = torch.where(M.bool(), V, Z)
 
-        return X_hat, Z
+        return X_hat, X_hat, Z
 
     else:
         if Q is None:
@@ -187,7 +186,7 @@ def covImpute_torch(
 
             X_hat = torch.where(M.bool(), U, (Z > Q).float())
 
-            return X_hat, Z
+            return X_hat, Z, Z
 
         else:
             M1 = (~torch.isnan(U)).float()
@@ -343,7 +342,7 @@ def cv_mu_torch(
             if verbose:
                 print(f"Evaluating mu = {mu:.2e}")
 
-            X_hat, _ = covImpute_torch(
+            X_hat, _, _ = covImpute_torch(
                 E=E,
                 mu=mu,
                 V=V_train,

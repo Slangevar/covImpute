@@ -106,7 +106,7 @@ def covImpute(
     patience: int = 3,
     verbose: bool = False,
     weighted: bool = False,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Perform covariance-regularized matrix imputation with optional binary part.
 
@@ -180,7 +180,7 @@ def covImpute(
 
         X_hat = V + (1 - M) * Z
 
-        return X_hat, Z
+        return X_hat, X_hat, Z
 
     else:
         if Q is None:
@@ -226,7 +226,7 @@ def covImpute(
 
             X_hat = U + (1 - M) * ((Z > Q).astype(int))
 
-            return X_hat, Z
+            return X_hat, Z, Z
 
         else:
             if Q is None:
@@ -395,7 +395,7 @@ def cv_mu(
                 print(f"Evaluating mu = {mu: .2e}")
 
             # Perform imputation (assumes covImpute is defined elsewhere)
-            X_hat, _ = covImpute(
+            X_hat, _, _ = covImpute(
                 E=E,
                 mu=mu,
                 V=V_train,
