@@ -3,7 +3,6 @@ import numpy as np
 from typing import Optional, Callable
 from scipy.stats import norm
 from sklearn.model_selection import KFold
-from sklearn.metrics import f1_score, roc_auc_score
 
 
 def f1(
@@ -284,9 +283,11 @@ def covImpute(
 
             W_hat = (Z[:, :m1] > Q).astype(int)
             Y_hat = Z[:, m1:]
+            V_hat = M2 * V + (1 - M2) * Y_hat
+            X_hat_partial = np.hstack((Z[:, :m1], V_hat))
             X_hat = M * X + (1 - M) * np.hstack((W_hat, Y_hat))
 
-            return X_hat, Z
+            return X_hat, X_hat_partial, Z
 
 
 def cv_mu(
@@ -446,31 +447,61 @@ def cv_mu(
     return best_mu, best_avg_loss
 
 
-def neg_f1_score(X_true, X_hat, test_mask):
+def higham(
+    X: np.ndarray,
+    eps: float = 1e-6,
+    kappa: float = 1e3,
+    eig_tol: float = 1e-6,
+    maxit: int = 1000,
+    verbose: bool = False,
+):
     """
-    Calculate the negative F1 score between the true and predicted values.
+    Higham's algorithm to find the nearest positive semidefinite matrix.
 
-    X_true: True values (ground truth)
-    X_hat: Predicted values
-    test_mask: Mask indicating which values are involved in the test.
+    X: Input covariance matrix (must be symmetric but may not be positive semidefinite)
+    eps: Tolerance for convergence of the higham algorithm
+    kappa: The target condition number of the matrix
+    eig_tol: Tolerance for eigenvalue convergence
+    maxit: Maximum number of iterations
+    verbose: If True, print the convergence criterion at each iteration
     """
+    if not np.allclose(X, X.T, atol=1e-10):
+        raise ValueError("Input matrix must be symmetric.")
 
-    X_true_unobserved = X_true[test_mask].flatten()
-    X_hat_unobserved = X_hat[test_mask].flatten()
+    D_s = np.zeros_like(X)
 
-    return -1 * f1_score(X_true_unobserved, X_hat_unobserved)
+    conv = np.inf
 
+    for it in range(1, maxit + 1):
+        Y = X
+        R = Y - D_s
+        d, Q = np.linalg.eigh(R)
+        p = d > (eig_tol * d[-1])
+        if np.all(p == False):
+            raise ValueError("Matrix seems to be negative semidefinite.")
 
-def neg_roc_auc(X_true, X_hat, test_mask):
-    """
-    Calculate the negative AUC-ROC score between the true and predicted values.
+        # First part
+        Q = Q[:, p]
+        X = Q @ np.diag(d[p]) @ Q.T
+        D_s = X - R
+        conv = np.linalg.norm(Y - X, ord="fro") / np.linalg.norm(Y, ord="fro")
 
-    X_true: True values (ground truth)
-    X_hat: Predicted values
-    test_mask: Mask indicating which values are involved in the test.
-    """
+        if verbose:
+            print(f"Iteration {it}: Convergence criterion = {conv:.6f}")
 
-    X_true_unobserved = X_true[test_mask].flatten()
-    X_hat_unobserved = X_hat[test_mask].flatten()
+        if conv < eps:
+            break
 
-    return -1 * roc_auc_score(X_true_unobserved, X_hat_unobserved)
+    # Second part for adjusting the condition number
+    d, Q = np.linalg.eigh(X)
+    min_val = d[-1] / kappa
+    if d[0] < min_val:
+        d[d < min_val] = min_val
+    o_diag = np.diag(X)
+    X = Q @ np.diag(d) @ Q.T
+    D = np.sqrt(np.maximum(min_val, o_diag) / np.diag(X))
+    X = D[:, None] * X * D[None, :]
+
+    if conv >= eps:
+        print(f"Warning: Higham's algorithm did not converge after {maxit} iterations.")
+    return X

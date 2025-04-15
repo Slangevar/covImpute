@@ -238,9 +238,11 @@ def covImpute_torch(
 
             W_hat = (Z[:, :m1] > Q).float()
             Y_hat = Z[:, m1:]
+            V_hat = torch.where(M2.bool(), V, Y_hat)
+            X_hat_partial = torch.cat((Z[:, :m1], V_hat), dim=1)
             X_hat = torch.where(M.bool(), X, torch.cat((W_hat, Y_hat), dim=1))
 
-            return X_hat, Z
+            return X_hat, X_hat_partial, Z
 
 
 def cv_mu_torch(
@@ -417,31 +419,69 @@ def cv_mu_torch(
     return best_mu, best_avg_loss
 
 
-def neg_f1_score(X_true, X_hat, test_mask):
+def higham_torch(
+    X: Union[torch.Tensor, np.ndarray],
+    eps: float = 1e-6,
+    kappa: float = 1e3,
+    eig_tol: float = 1e-6,
+    maxit: int = 1000,
+    verbose: bool = False,
+    device: Optional[str] = None,
+) -> torch.Tensor:
     """
-    Calculate the negative F1 score between the true and predicted values.
+    Higham's algorithm to find the nearest positive semidefinite matrix (torch version).
 
-    X_true: True values (ground truth)
-    X_hat: Predicted values
-    test_mask: Mask indicating which values are involved in the test.
+    Parameters:
+    X: torch.Tensor or Numpy array (2D square matrix, symmetric but possibly not PSD)
+    eps: convergence tolerance
+    kappa: target condition number (lambda_max / lambda_min)
+    eig_tol: relative eigenvalue threshold
+    maxit: maximum number of iterations
+    verbose: whether to print convergence info
+    device: device to use for computation (e.g., 'cuda' or 'cpu')
+
+    Returns:
+    torch.Tensor: PSD-adjusted version of X
     """
+    X = to_tensor(X, device)
+    if not torch.allclose(X, X.T, atol=1e-10):
+        raise ValueError("Input matrix must be symmetric.")
 
-    X_true_unobserved = X_true[test_mask].flatten()
-    X_hat_unobserved = X_hat[test_mask].flatten()
+    D_s = torch.zeros_like(X)
+    conv = float("inf")
 
-    return -1 * f1_score(X_true_unobserved, X_hat_unobserved)
+    for it in range(1, maxit + 1):
+        Y = X
+        R = Y - D_s
+        d, Q = torch.linalg.eigh(R)  # pylint: disable=not-callable
+        max_d = d[-1]
+        p = d > (eig_tol * max_d)
 
+        if not torch.any(p):
+            raise ValueError("Matrix seems to be negative semidefinite.")
 
-def neg_roc_auc(X_true, X_hat, test_mask):
-    """
-    Calculate the negative AUC-ROC score between the true and predicted values.
+        Q = Q[:, p]
+        X = Q @ torch.diag(d[p]) @ Q.T
+        D_s = X - R
+        conv = torch.norm(Y - X, p="fro") / torch.norm(Y, p="fro")
 
-    X_true: True values (ground truth)
-    X_hat: Predicted values
-    test_mask: Mask indicating which values are involved in the test.
-    """
+        if verbose:
+            print(f"Iteration {it}: Convergence criterion = {conv:.6f}")
 
-    X_true_unobserved = X_true[test_mask].flatten()
-    X_hat_unobserved = X_hat[test_mask].flatten()
+        if conv < eps:
+            break
 
-    return -1 * roc_auc_score(X_true_unobserved, X_hat_unobserved)
+    # Enforce condition number constraint
+    d, Q = torch.linalg.eigh(X)  # pylint: disable=not-callable
+    min_val = d[-1] / kappa
+    d[d < min_val] = min_val
+
+    o_diag = torch.diag(X)
+    X = Q @ torch.diag(d) @ Q.T
+    D = torch.sqrt(torch.maximum(min_val, o_diag) / torch.diag(X))
+    X = D[:, None] * X * D[None, :]
+
+    if conv >= eps:
+        print(f"Warning: Higham's algorithm did not converge after {maxit} iterations.")
+
+    return X
