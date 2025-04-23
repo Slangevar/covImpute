@@ -76,7 +76,7 @@ def covImpute_torch(
     V: Optional[Union[Tensor, np.ndarray]] = None,
     U: Optional[Union[Tensor, np.ndarray]] = None,
     Q: Optional[Union[Tensor, np.ndarray]] = None,
-    maxit: int = 1000,
+    maxit: int = 10000,
     tol: float = 1e-3,
     patience: int = 3,
     verbose: bool = False,

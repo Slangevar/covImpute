@@ -10,7 +10,7 @@ def covImpute(
     X: np.ndarray,
     E: np.ndarray,
     mu: float,
-    maxit: int = 1000,
+    maxit: int = 10000,
     tol: float = 1e-3,
     patience: int = 3,
     verbose: bool = False,
