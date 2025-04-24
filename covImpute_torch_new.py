@@ -79,7 +79,7 @@ def covImpute_torch(
     U: Optional[Union[Tensor, np.ndarray]] = None,
     Q: Optional[Union[Tensor, np.ndarray]] = None,
     maxit: int = 10000,
-    tol: float = 1e-3,
+    tol: float = 1e-4,
     patience: int = 3,
     verbose: bool = False,
     device: Optional[str] = None,
@@ -151,7 +151,7 @@ def covImpute_torch(
 
         X_hat = torch.where(M.bool(), V, Z)
 
-        return X_hat, X_hat, Z
+        return X_hat, Z
 
     else:
         if Q is None:
@@ -190,7 +190,7 @@ def covImpute_torch(
 
             X_hat = torch.where(M.bool(), U, (Z > Q).float())
 
-            return X_hat, Z, Z
+            return X_hat, Z
 
         else:
             M1 = (~torch.isnan(U)).float()
@@ -241,26 +241,31 @@ def covImpute_torch(
 
             W_hat = (Z[:, :m1] > Q).float()
             Y_hat = Z[:, m1:]
-            V_hat = torch.where(M2.bool(), V, Y_hat)
-            X_hat_partial = torch.cat((Z[:, :m1], V_hat), dim=1)
             X_hat = torch.where(M.bool(), X, torch.cat((W_hat, Y_hat), dim=1))
 
-            return X_hat, X_hat_partial, Z
+            return X_hat, Z
 
 
 def nearest_mu(
-    G: Union[Tensor, np.ndarray],
+    E: Union[Tensor, np.ndarray],
     norm: str = "fro",
     device: Optional[str] = None,
 ) -> Tensor:
     """
-    Find the mu such that mu I is the nearest for the covariance matrix G.
+    Find the mu such that mu I is the nearest for the (environemental) covariance matrix E.
+
+    E: torch.Tensor or Numpy array (The environmental covariance matrix)
+    norm: str (norm type, either 'fro', 'spectral', or 'nuclear')
+    device: device to use for computation (e.g., 'cuda' or 'cpu')
+
+    Returns:
+    torch.Tensor: The mu value that leads to the nearest mu I matrix to E under the specified norm.
     """
-    G = to_tensor(G, device=device)
+    E = to_tensor(E, device=device)
     if norm == "fro":
-        return torch.trace(G) / G.shape[0]
+        return torch.trace(E) / E.shape[0]
     if norm == "spectral" or norm == "nuclear":
-        eigvals, _ = torch.linalg.eigh(G)  # pylint: disable=not-callable
+        eigvals, _ = torch.linalg.eigh(E)  # pylint: disable=not-callable
         if norm == "spectral":
             gamma_min, gamma_max = eigvals.min(), eigvals.max()
             return (gamma_min + gamma_max) / 2.0
